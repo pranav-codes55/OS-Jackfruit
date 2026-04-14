@@ -28,16 +28,16 @@ This repository contains a complete implementation of the Multi-Container Runtim
 - **`bounded_buffer_push` / `bounded_buffer_pop`** — Classic producer-consumer bounded buffer using a mutex and two condition variables (`not_full`, `not_empty`). Producers block when full; consumers drain all remaining items before exiting on shutdown so no log lines are lost.
 - **`producer_thread`** — One detached thread per container. Reads from the container's pipe and pushes log chunks into the shared buffer.
 - **`logging_thread`** — Single consumer thread. Pops from the buffer and appends to per-container log files. On shutdown, drains leftover items before returning.
-- **`child_fn`** — Clone child entry point. Sets hostname (UTS), `chroot`s into the container rootfs, mounts `/proc`, redirects stdout/stderr to the logging pipe, then runs the requested command via `/bin/sh -c` so command arguments work.
-- **`run_supervisor`** — Opens `/dev/container_monitor`, creates the UNIX domain socket at `/tmp/mini_runtime.sock`, installs SIGCHLD/SIGTERM/SIGINT handlers, spawns the logger thread, and enters a `select` event loop. Each accepted CLI request is handled in a detached request thread, so long `run` requests do not block other control commands.
-- **`handle_request`** — Dispatches `start`, `run`, `ps`, `logs`, `stop` commands. The `run` command waits on container metadata state changes and returns the real container exit status.
+- **`child_fn`** — Clone child entry point. Sets hostname (UTS), `chroot`s into the container's rootfs, mounts `/proc`, redirects stdout/stderr to the logging pipe, then `execvp`s the requested command.
+- **`run_supervisor`** — Opens `/dev/container_monitor`, creates the UNIX domain socket at `/tmp/mini_runtime.sock`, installs SIGCHLD/SIGTERM/SIGINT handlers, spawns the logger thread, and enters a `select`-based event loop that accepts one connection per CLI request.
+- **`handle_request`** — Dispatches `start`, `run`, `ps`, `logs`, `stop` commands. The `run` command blocks with `waitpid` until the container exits.
 - **`reap_children`** — Called on SIGCHLD. Uses `waitpid(-1, WNOHANG)` in a loop. Classifies exit as `stopped`, `killed`, or `exited` using the `stop_requested` flag.
 - **`send_control_request`** — Client-side: connects to the supervisor socket, sends a `control_request_t`, receives a `control_response_t`.
 
 **`monitor.c` — Kernel Module**
 
 - Defines `struct monitored_entry` with `list_head` linkage, PID, limits, and `soft_warned` flag.
-- `LIST_HEAD(monitored_list)` + `DEFINE_SPINLOCK(monitored_lock)` protect concurrent access from ioctl and the timer callback.
+- `LIST_HEAD(monitored_list)` + `DEFINE_MUTEX(monitored_lock)` protect concurrent access from ioctl and the timer.
 - `timer_callback` fires every second, iterates `list_for_each_entry_safe`, removes stale entries, enforces limits.
 - `MONITOR_REGISTER` ioctl allocates a node and inserts it under the mutex.
 - `MONITOR_UNREGISTER` ioctl finds and frees the matching node.
@@ -292,7 +292,7 @@ These results align with CFS's goals: *fairness* (weighted proportional share), 
 | Control IPC | UNIX domain socket | Per-request connection overhead | Bidirectional, no polling needed; straightforward client/server model |
 | Logging IPC | One pipe per container | N pipe fds in the supervisor | Cleanly separates container streams; no demultiplexing needed |
 | Bounded buffer sync | `pthread_mutex` + 2 condvars | Adds lock contention on every push/pop | Classic, provably correct producer-consumer; avoids busy-wait |
-| Kernel list lock | `spin_lock_irqsave` | More careful lock discipline is required | Timer callback cannot sleep, so spinlocks are the safe and correct choice for list protection |
+| Kernel list lock | `mutex` (not spinlock) | Slightly higher overhead | Timer callback runs in process context on modern kernels where sleeping is safe; mutex is correct here |
 | Termination classification | `stop_requested` flag | One extra field per metadata record | Accurately distinguishes user-initiated stop from kernel-enforced kill without relying on signal-number heuristics alone |
 
 ---
@@ -323,7 +323,7 @@ io-pulse    io_pulse    0      Writes every 200ms, ~5% CPU utilisation
 
 ## Screenshot Checklist
 
-Capture each item below as an annotated screenshot from your Ubuntu VM demo. Keep the caption to 1 line per screenshot.
+(Replace each item with actual annotated screenshots when running on your Ubuntu VM.)
 
 | # | Demonstration | Screenshot |
 |---|---------------|------------|

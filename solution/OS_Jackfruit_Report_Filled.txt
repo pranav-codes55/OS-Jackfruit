@@ -1,0 +1,217 @@
+MINI PROJECT REPORT ON OPERATING SYSTEMS
+
+Project Title: Multi-Container Runtime with Kernel Memory Monitor
+Course: UE24CS242B - Operating Systems
+Program: Bachelor of Technology in Computer Science and Engineering
+Semester: Jan-May 2026
+
+Submitted by:
+1. Prajwal M (PES2UG24CS910)
+2. R P Pranav (PES2UG24CS917)
+
+Under the guidance of:
+Prof. Neha Sharma
+Assistant Professor
+Department of Computer Science and Engineering
+PES University, Bengaluru
+
+
+CERTIFICATE
+
+This is to certify that the mini project entitled "Multi-Container Runtime with Kernel Memory Monitor" is a bonafide work carried out by Prajwal M (PES2UG24CS910) and R P Pranav (PES2UG24CS917), in partial fulfilment of the course UE24CS242B - Operating Systems, during Jan-May 2026.
+
+
+DECLARATION
+
+We hereby declare that the Operating Systems mini project entitled "Multi-Container Runtime with Kernel Memory Monitor" has been carried out by us under the guidance of Prof. Neha Sharma and submitted in partial fulfilment of the requirements for the degree of Bachelor of Technology in Computer Science and Engineering at PES University.
+
+
+ACKNOWLEDGEMENT
+
+We express our sincere gratitude to Prof. Neha Sharma for her guidance, constant support, and valuable feedback throughout this project. We thank the Department of Computer Science and Engineering, PES University, for the infrastructure and resources required to complete this work. We also thank our peers, friends, and family members for their encouragement.
+
+
+ABSTRACT
+
+This project implements a lightweight Linux container runtime in C, featuring a long-running user-space supervisor and a kernel-space memory monitor module. The runtime can launch and manage multiple containers concurrently, maintain lifecycle metadata, and expose a command-line interface with commands for starting, running, listing, stopping, and inspecting container logs.
+
+The design uses two IPC paths: (1) a UNIX domain socket for control commands between client and supervisor, and (2) pipe-based log transport from container stdout/stderr into a bounded-buffer producer-consumer logging pipeline. The bounded buffer ensures safe concurrent logging with no dropped messages during orderly shutdown.
+
+A Linux kernel module tracks registered container host PIDs, periodically checks resident memory usage (RSS), logs soft-limit violations, and enforces hard-limit policies by terminating processes that exceed configured thresholds. The supervisor integrates with the module through ioctl calls and classifies container termination causes (normal exit, manual stop, or hard-limit kill).
+
+Finally, controlled scheduler experiments using CPU-bound and I/O-bound workloads demonstrate Linux scheduling behavior under varying priorities (nice values). Observed results validate expected fairness and responsiveness properties of CFS.
+
+
+TABLE OF CONTENTS
+
+1. INTRODUCTION
+2. PROBLEM DEFINITION
+3. METHODOLOGY
+4. CODE STRUCTURE
+5. RESULTS AND DISCUSSION
+6. OUTPUTS / SCREENSHOTS
+7. GITHUB LINK
+8. REFERENCES / BIBLIOGRAPHY
+9. APPENDIX A - DEFINITIONS, ACRONYMS, ABBREVIATIONS
+
+
+1. INTRODUCTION
+
+Containerization requires process isolation, controlled resource usage, and robust lifecycle management. This project builds a compact multi-container runtime using Linux namespaces and a parent supervisor. The supervisor stays alive while containers run, handles user commands, captures logs, and maintains metadata.
+
+In addition to user-space runtime management, the project includes kernel-space memory monitoring. The kernel module receives container PID registrations and enforces memory limits using soft warnings and hard enforcement. This architecture demonstrates key operating system concepts: process creation, namespace-based isolation, IPC, synchronization, signal handling, and kernel-user interaction.
+
+
+2. PROBLEM DEFINITION
+
+The goal is to implement a runtime that:
+- Manages multiple containers concurrently under a single supervisor.
+- Provides required CLI commands: supervisor, start, run, ps, logs, stop.
+- Uses two IPC mechanisms:
+  - Control channel from client to supervisor.
+  - Logging channel from containers to supervisor.
+- Implements safe bounded-buffer logging using producer-consumer synchronization.
+- Integrates with a kernel module to monitor memory and enforce soft/hard limits.
+- Distinguishes termination causes in metadata.
+- Demonstrates scheduler behavior using controlled workloads.
+
+
+3. METHODOLOGY
+
+3.1 Supervisor and Container Lifecycle
+- A long-running supervisor is started using:
+  engine supervisor <base-rootfs>
+- Container creation uses clone() with namespace flags for PID, UTS, and mount isolation.
+- Each container uses a dedicated writable rootfs copy.
+- Child process setup includes hostname assignment, chroot into container rootfs, mounting /proc, and exec of requested command.
+- Supervisor reaps exited children using waitpid(-1, WNOHANG) in SIGCHLD handling logic.
+
+3.2 CLI and Control IPC
+- CLI client commands (start/run/ps/logs/stop) connect to the supervisor over a UNIX domain socket.
+- Client sends structured command requests; supervisor returns structured responses.
+- start returns after supervisor accepts and tracks metadata.
+- run blocks until container completion and returns final exit status.
+
+3.3 Logging Pipeline (Bounded Buffer)
+- Container stdout and stderr are redirected through pipes to supervisor-side producer threads.
+- Producers push log chunks into a bounded circular buffer.
+- A consumer logger thread pops entries and appends to per-container log files.
+- Synchronization uses mutex + condition variables (not_full, not_empty).
+- During shutdown, remaining log entries are drained before logger exit.
+
+3.4 Kernel Memory Monitor
+- Kernel module exposes /dev/container_monitor.
+- Supervisor registers container host PID and memory limits via ioctl.
+- Module stores monitored entries in a kernel linked list protected by spinlock.
+- Periodic timer callback checks RSS:
+  - Soft limit exceeded: one warning event logged.
+  - Hard limit exceeded: SIGKILL and entry cleanup.
+- On module unload, all entries are freed safely.
+
+3.5 Scheduling Experiments
+- CPU-bound and I/O-bound workloads are executed in separate containers.
+- Different nice values are used to compare priority effects.
+- Completion behavior and responsiveness are compared from logs and observed runtime output.
+
+
+4. CODE STRUCTURE
+
+Main files:
+- engine.c: user-space supervisor, CLI request handling, container lifecycle, logging pipeline.
+- monitor.c: kernel module with PID registration, periodic RSS checks, soft/hard limit policies.
+- monitor_ioctl.h: shared ioctl definitions between user-space and kernel-space.
+- cpu_hog.c: CPU-intensive workload.
+- io_pulse.c: I/O-oriented periodic workload.
+- memory_hog.c: memory pressure workload.
+- Makefile: build targets for user-space binaries and kernel module.
+
+Important implementation points:
+- Metadata includes container ID, host PID, start time, state, limits, log path, and exit reason.
+- stop_requested metadata flag differentiates manual stop from hard-limit SIGKILL.
+- Separate locks are used for log buffer synchronization and container metadata synchronization.
+
+
+5. RESULTS AND DISCUSSION
+
+5.1 Multi-container Supervision
+The supervisor remains active while managing multiple simultaneous containers. Containers can be started, listed, and stopped independently.
+
+5.2 Logging Reliability
+Concurrent log capture from multiple containers is stable. The bounded-buffer design prevents races and producer/consumer deadlocks. Logs are written persistently per container.
+
+5.3 Memory Monitoring
+Soft-limit crossings generate warnings in kernel logs. Hard-limit crossings terminate offending container processes, and supervisor metadata records the reason.
+
+5.4 Scheduler Behavior
+When two CPU-bound workloads run with different nice values, the higher-priority workload completes sooner. In mixed CPU-bound and I/O-bound runs, the I/O workload remains responsive, reflecting Linux CFS fairness and interactivity goals.
+
+
+6. OUTPUTS / SCREENSHOTS
+
+Insert annotated screenshots for the following:
+1. Multiple containers running under one supervisor.
+2. ps command output with container metadata.
+3. Per-container logs showing captured stdout/stderr.
+4. CLI request and supervisor response demonstrating control IPC.
+5. dmesg soft-limit warning event.
+6. dmesg hard-limit kill event and matching supervisor state.
+7. Scheduling experiment result comparison.
+8. Clean teardown evidence (no zombies, proper shutdown).
+
+[PLACEHOLDER: Add screenshot images and short captions here before final submission.]
+
+
+7. GITHUB LINK
+
+Repository URL:
+https://github.com/shivangjhalani/OS-Jackfruit
+
+
+8. REFERENCES / BIBLIOGRAPHY
+
+1. Linux man pages: clone(2), chroot(2), mount(2), waitpid(2), signal(7), unix(7), ioctl(2).
+2. Linux Kernel Documentation: timer API, linked lists, locking primitives.
+3. Course notes and lab references for UE24CS242B Operating Systems.
+4. Alpine Linux documentation for root filesystem setup.
+
+
+9. APPENDIX A - DEFINITIONS, ACRONYMS, ABBREVIATIONS
+
+- PID: Process Identifier
+- RSS: Resident Set Size
+- IPC: Inter-Process Communication
+- LKM: Loadable Kernel Module
+- UTS namespace: Hostname/domain isolation namespace
+- CFS: Completely Fair Scheduler
+- SIGCHLD: Signal sent to parent on child state change
+- SIGTERM: Graceful termination signal
+- SIGKILL: Non-catchable force-kill signal
+- ioctl: Device control system call
+
+
+APPENDIX B - SAMPLE COMMANDS USED
+
+Build:
+make
+
+Load module:
+sudo insmod monitor.ko
+
+Start supervisor:
+sudo ./engine supervisor ./rootfs-base
+
+Start containers:
+sudo ./engine start alpha ./rootfs-alpha /cpu_hog --soft-mib 48 --hard-mib 80
+sudo ./engine start beta ./rootfs-beta /io_pulse --soft-mib 64 --hard-mib 96
+
+List containers:
+sudo ./engine ps
+
+View logs:
+sudo ./engine logs alpha
+
+Stop container:
+sudo ./engine stop alpha
+
+Unload module:
+sudo rmmod monitor
