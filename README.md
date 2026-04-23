@@ -225,7 +225,7 @@ The runtime calls `clone()` with three namespace flags:
 
 What the host kernel still shares with all containers: the network stack (no `CLONE_NEWNET`), the IPC namespace (no `CLONE_NEWIPC`), and the cgroup hierarchy. These were omitted for simplicity.
 
-### 2. Supervisor and Process Lifecycle
+### 2. Supervisor & Process Lifecycle
 
 The supervisor is a long-running parent because only the parent of a process can `wait()` for it. If each `engine start` invocation launched a container and exited, the container would be reparented to PID 1 (init) and the original parent's metadata would be lost.
 
